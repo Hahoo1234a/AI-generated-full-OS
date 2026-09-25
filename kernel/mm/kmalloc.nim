@@ -119,7 +119,7 @@ proc kfree*(p: pointer) =
   if h.magic != HDR_MAGIC: return
   if h.used:
     h.used = false
-    dec liveBytes, h.size
+    liveBytes -= h.size   # `dec` would demand an int; h.size is uint64
     # coalesce forward repeatedly: absorb each adjacent free block, whose
     # header then becomes part of our payload (hence + sizeof(BlockHdr)).
     var cur = h

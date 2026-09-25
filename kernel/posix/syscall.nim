@@ -15,7 +15,7 @@
 {.push hints: off, raises: [].}
 
 import ../types, ../mem, ../mm/kmalloc, vfs
-import tty, ../drivers/vga
+import tty, ../drivers/vga, ../drivers/serial
 
 const
   MAX_FILES*     = 64    ## per-"process" fd table size (0..2 reserved stdio)
@@ -43,7 +43,7 @@ proc rfindSep(s: string): int =
     dec i
   -1
 
-proc sysOpen(path: cstring, flags: uint32, mode: uint32): Errno {.cdecl.} =
+proc sysOpen*(path: cstring, flags: uint32, mode: uint32): Errno {.cdecl.} =
   let p = $path
   var dirPath = "/"
   var name = p
@@ -76,12 +76,12 @@ proc sysOpen(path: cstring, flags: uint32, mode: uint32): Errno {.cdecl.} =
     inc i
   -EMFILE
 
-proc sysClose(fd: cint): Errno {.cdecl.} =
+proc sysClose*(fd: cint): Errno {.cdecl.} =
   if not isOpenFd(fd): return -EBADF
   openFiles[fd].used = false
   0'i32
 
-proc sysRead(fd: cint, buf: pointer, count: csize): Ssize {.cdecl.} =
+proc sysRead*(fd: cint, buf: pointer, count: csize): Ssize {.cdecl.} =
   if not isOpenFd(fd): return -(EBADF.Ssize)
   let n = getNode(openFiles[fd].node)
   if n.isNil: return -EIO.Ssize
@@ -100,7 +100,7 @@ proc sysRead(fd: cint, buf: pointer, count: csize): Ssize {.cdecl.} =
     openFiles[fd].off += take.uint64
     take.Ssize
 
-proc sysWrite(fd: cint, buf: pointer, count: csize): Ssize {.cdecl.} =
+proc sysWrite*(fd: cint, buf: pointer, count: csize): Ssize {.cdecl.} =
   if not isOpenFd(fd): return -EBADF.Ssize
   let n = getNode(openFiles[fd].node)
   if n.isNil: return -EIO.Ssize
@@ -125,7 +125,7 @@ proc sysWrite(fd: cint, buf: pointer, count: csize): Ssize {.cdecl.} =
     if openFiles[fd].off > n.size: n.size = openFiles[fd].off
     count.Ssize
 
-proc sysLseek(fd: cint, off: int64, whence: cint): int64 {.cdecl.} =
+proc sysLseek*(fd: cint, off: int64, whence: cint): int64 {.cdecl.} =
   if not isOpenFd(fd): return (-EBADF).int64
   let n = getNode(openFiles[fd].node)
   if n.isNil: return (-EIO).int64
@@ -140,7 +140,7 @@ proc sysLseek(fd: cint, off: int64, whence: cint): int64 {.cdecl.} =
   openFiles[fd].off = res.uint64
   res
 
-proc sysGetdents(fd: cint, dirp: pointer, count: csize): Ssize {.cdecl.} =
+proc sysGetdents*(fd: cint, dirp: pointer, count: csize): Ssize {.cdecl.} =
   ## Simplified linux_dirent64 stream: fixed-size records for predictability.
   if not isOpenFd(fd): return -EBADF.Ssize
   let n = getNode(openFiles[fd].node)
@@ -208,11 +208,11 @@ proc syscalls*(nr: cint, a0, a1, a2: uint64): int64 {.cdecl.} =
   else:          (-ENOSYS).int64
 
 # stdio helpers used by shell.nim (printf-like but allocation-free) ----------
+# Echo every kernel message to BOTH consoles: VGA text buffer for the QEMU
+# window, 16550 UART for `qemu -serial mon:stdio` hosts. putcSerial/writeSerial
+# come from ../drivers/serial (imported at the top of this file).
 proc kprint*(s: string) =
   writeVga(s)
-  import_serial_write(s)
-
-proc import_serial_write(s: string) =
   var i = 0
   while i < s.len:
     putcSerial(s[i]); inc i

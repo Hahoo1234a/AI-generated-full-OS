@@ -30,6 +30,19 @@ var running = true
 var fgColor = FG_LGRAY
 var bgColor = BG_BLACK
 
+# Busy-wait backoff used by the line editor when both PS/2 and UART queues are
+# empty. Templates must be defined BEFORE first use in Nim (no forward refs),
+# which is why this lives up here instead of next to the other helpers below.
+template pauseSpinShell() =
+  var s = 0
+  while s < 5000: inc s   # ~microsecond-ish backoff; replaced by hlt/idle later
+
+proc parseIntSafe(s: string): int =
+  result = 0
+  for c in s:
+    if c < '0' or c > '9': return -1
+    result = result * 10 + (c.ord - '0'.ord)
+
 proc splat(s: string): seq[string] =
   result = @[]
   var cur = ""
@@ -95,10 +108,6 @@ proc readLine(): string =
         inc inputLen
         inputBuf[inputLen] = '\0'
         putcVga(ch); putcSerial(ch)
-
-template pauseSpinShell() =
-  var s = 0
-  while s < 5000: inc s
 
 proc cmdHelp() =
   outl("NIMSH commands:")
@@ -272,11 +281,5 @@ proc runShell*(banner: bool = true) =
     else: outl(args[0] & ": command not found")
   outl("shell exited -- halting.")
   haltCpu()
-
-proc parseIntSafe(s: string): int =
-  result = 0
-  for c in s:
-    if c < '0' or c > '9': return -1
-    result = result * 10 + (c.ord - '0'.ord)
 
 {.pop.}
