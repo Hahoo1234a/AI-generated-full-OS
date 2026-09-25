@@ -1,56 +1,82 @@
 # ============================================================================
-# kernel/limine.nim -- hand-written bindings for the parts of the Limine
-# boot protocol (https://github.com/limine-bootloader/limine, v5.x / revision
-# 2.0) that our kernel consumes: the base revision tag, the memory-map
-# request and the framebuffer request.
+# kernel/limine.nim -- hand-written bindings for the Limine boot protocol
+# (https://github.com/limine-bootloader/limine, revision 2 / v5.x+).
 #
-# Why a `.data` section for requests?  The Limine spec requires requests to
-# live in a non-read-only section so the bootloader can write back `done`.
-# We achieve that with `{.section: ".requests".}` -- a Nim pragma that maps
-# straight onto GCC's `__attribute__((section(".requests")))`.
+# How Limine hands off to us:
+#   * Limine parses our ELF64 kernel, maps it into the higher half, enables
+#     paging + long mode, and jumps to `_start`.
+#   * Before jumping it scans every loaded module's ELF sections for a
+#     special section named `.limine_reqs` containing an array of
+#     {moduleId: uint64, pointerToRequest: *req} pairs, and fills in each
+#     request's response fields.
 #
-# Bare-metal Nim trick #3: every struct field is declared `packed` semantics
-# by construction -- we only use fixed-width integer types and explicit
-# padding arrays so the C backend lays them out identically to the spec.
+# Nim bare-metal trick #3: we place the *request variables themselves* into
+# a custom section with `{.codegenDecl.}`-style attribute emission. The most
+# portable way across Nim versions is {.emit.} declaring the variables in C
+# with __attribute__((section(".requests"))) -- ".requests" is NOT read-only,
+# which the spec requires (the bootloader must write back into them). We
+# then reference them from Nim via importc/nodecl.
+#
+# All structs use fixed-width ints only, so the C backend lays them out
+# byte-for-byte like the official limine*.h headers.
 # ============================================================================
 
-{.push hints: off.}
+{.push hints: off, raises: [].}
 
 const
-  LIMINE_MAGIC*: cstring = "LIMITSMM"   # first 8 bytes of every limine_struct
-  LIMINE_REVISION*: uint64 = 2          # we implement protocol revision 2
+  LIMINE_BASE_REVISION_1*: uint64 = 1
+  LIMINE_BASE_REVISION_2*: uint64 = 2
+  LIMINE_REQ_OK*: uint64 = 0x5555555555555557'u64  # sentinel written on success
 
 type
-  LimineFile* {.bycopy.} = object
-    revision*: uint64
-    dtype*: uint32          # 1 = EXECUTABLE / kernel ELF itself
-    uri*: cstring           # e.g. "boot//BOOTFS/nimos.bin"
-    cmdline*: cstring       # kernel command line from limine.cfg
-    module*: pointer        # multiboot-style module (unused)
-    msize*: uint64
-    entry_point*: pointer   # physical address where control was transferred
-
-  LimineBootdevRequest* {.bycopy.} = object
-    revision*: uint64
-    # response
-    kind*: uint32
-    unused*: uint32
-    partition_uuid*: array[16, uint8]
-    parent_uuid*: array[16, uint8]
-
-  LimineMemmapEntry* {.bycopy.} = object
+  # ---- MEMORY MAP (request tag 0x...; struct per spec §Memory Map) ---------
+  LimineMemmapEntry* {.bycopy, pure.} = object
     base*: uint64
     length*: uint64
     kind*: uint32
+    unused*: uint32
 
-  const MEMMAP_MAX* = 512
-  LimineMemmapRequest* {.bycopy.} = object
+  LimineMemmapRequest* {.bycopy, pure.} = object
     revision*: uint64
     entry_count*: uint64
     entries*: ptr UncheckedArray[LimineMemmapEntry]
 
-  # --- framebuffer (we only need linear RGB / BGX + pitch) ------------------
-  LimineFramebufferMode* {.bycopy.} = object
+  # ---- HHDM offset ----------------------------------------------------------
+  LimineHhdmRequest* {.bycopy, pure.} = object
+    revision*: uint64
+    offset*: uint64
+
+  # ---- MODULES (our RAM disk images arrive here) ----------------------------
+  LimineModule* {.bycopy, pure.} = object
+    dataset*: pointer        # opaque bootloader handle
+    size*: uint64            # bytes of data below
+    address*: uint64         # PHYSICAL address of module data
+    string*: cstring         # "nimos-initrd" or similar from limine.cfg
+
+  LimineModulesRequest* {.bycopy, pure.} = object
+    revision*: uint64
+    module_count*: uint64
+    modules*: ptr UncheckedArray[LimineModule]
+
+  # ---- BOOTLOADER INFO / FILE (for cmdline + version banner) ---------------
+  LimineFile* {.bycopy, pure.} = object
+    revision*: uint64
+    dtype*: uint32           # 1 == EXECUTABLE (the kernel ELF itself)
+    nodecl0*: uint32
+    uri*: cstring
+    cmdline*: cstring
+    module*: pointer
+    msize*: uint64
+    entry_point*: pointer
+
+  LimineBootloaderInfoRequest* {.bycopy, pure.} = object
+    revision*: uint64
+    name*: cstring
+    version*: cstring
+    file*: ptr LimineFile
+
+  # ---- FRAMEBUFFER (optional; we fall back to VGA text) ---------------------
+  LimineFramebufferMode* {.bycopy, pure.} = object
     width*: uint32
     height*: uint32
     pitch*: uint32
@@ -65,51 +91,95 @@ type
     memory_model*: uint8     # 1 = RGB, 2 = BGR
     address*: pointer
 
-  LimineFramebufferRequest* {.bycopy.} = object
+  LimineFramebufferRequest* {.bycopy, pure.} = object
     revision*: uint64
-    mode_count*: uint32
-    modes*: ptr UncheckedArray[LimineFramebufferMode]
-    highest_mode*: bool
+    framebuffer_count*: uint64
+    framebuffers*: ptr UncheckedArray[LimineFramebufferMode]
 
-  # --- rsdp (ACPI) -----------------------------------------------------------
-  LimineRsdpRequest* {.bycopy.} = object
+  # ---- RSMP / SMP (CPU bringup; parsed but unused in this revision) --------
+  LimineSmpEntry* {.bycopy, pure.} = object
+    lapic_id*: uint32
+    unused*: uint32
+    address*: uint64         # physical trampoline address
+    processor_id*: uint32
+
+  LimineSmpRequest* {.bycopy, pure.} = object
     revision*: uint64
-    address*: pointer
+    flags*: uint32
+    unused*: uint32
+    entry_count*: uint64
+    entries*: ptr UncheckedArray[LimineSmpEntry]
 
-  # --- HHDM offset ("higher-half direct map") --------------------------------
-  LimineHhdmRequest* {.bycopy.} = object
-    revision*: uint64
-    offset*: uint64
-
-# Memory-map entry kinds (Limine spec §Memory Map).
 const
-  MM_USED*: uint32 = 0
-  MM_FREE*: uint32 = 1
-  MM_RESERVED*: uint32 = 2
-  MM_ACPI_RECLAIMABLE*: uint32 = 3
-  MM_ACPI_NVS*: uint32 = 4
-  MM_BAD_MEMORY*: uint32 = 5
+  # Memory-map entry kinds (Limine spec table):
+  MM_USED*: uint32              = 0
+  MM_FREE_MEMORY*: uint32       = 1
+  MM_RESERVED*: uint32          = 2
+  MM_ACPI_RECLAIMABLE*: uint32  = 3
+  MM_NVS*: uint32               = 4
+  MM_BAD_MEMORY*: uint32        = 5
   MM_BOOTLOADER_RECLAIMABLE*: uint32 = 6
-  MM_KERNEL_AND_MODULES*: uint32 = 7
+  MM_KERNEL_AND_MODULES*: uint32     = 7
+  MM_BOOTTD*: uint32            = 8
 
-# The actual request instances. `extern` gives them stable C symbol names so
-# the assembly stub in boot.s can reference them without name mangling.
-var limineRevision* {.importc: "LIMINE_BASE_REVISION", extern: "limine_base_rev", section: ".requests.":} =
-  2'u64
+# ---------------------------------------------------------------------------
+# The request instances + their .limine_reqs registration, all done in one
+# emitted C block. `__attribute__((used))` stops the linker from garbage
+# collecting them; the section array is terminated by two zero quads.
+# ---------------------------------------------------------------------------
+{.emit: """
+typedef struct { uint64_t id; void* ptr; } limine_req_pair;
 
-var limineMemmapReq* {.extern: "limine_memmap_request", section: ".requests":} =
-  LimineMemmapRequest(revision: 2)
+static uint64_t nimos_limine_base_rev __asm__("limine_base_revision") = 2;
 
-var limineFramebufferReq* {.extern: "limine_fb_request", section: ".requests":} =
-  LimineFramebufferRequest(revision: 0)
+static struct { uint64_t revision; uint64_t entry_count; void* entries; }
+  nimos_memmap_req __asm__("limine_memmap_request") __attribute__((section(".requests"), used)) = {0};
+static struct { uint64_t revision; uint64_t offset; }
+  nimos_hhdm_req __asm__("limine_hhdm_request") __attribute__((section(".requests"), used)) = {0};
+static struct { uint64_t revision; uint64_t module_count; void* modules; }
+  nimos_modules_req __asm__("limine_modules_request") __attribute__((section(".requests"), used)) = {0};
+static struct { uint64_t revision; void* name; void* version; void* file; }
+  nimos_bootinfo_req __asm__("limine_bootloader_info_request") __attribute__((section(".requests"), used)) = {0};
+static struct { uint64_t revision; uint64_t fb_count; void* fbs; }
+  nimos_fb_req __asm__("limine_framebuffer_request") __attribute__((section(".requests"), used)) = {0};
+static struct { uint64_t revision; uint32_t flags; uint32_t unused; uint64_t entry_count; void* entries; }
+  nimos_smp_req __asm__("limine_smp_request") __attribute__((section(".requests"), used)) = {0};
 
-var limineHhdmReq* {.extern: "limine_hhdm_request", section: ".requests":} =
-  LimineHhdmRequest(revision: 0)
+__asm__(".section .limine_reqs, \"aw\", @progbits\n"
+        ".p2align 3\n"
+        ".quad 0xf9fd4d13, limine_memmap_request\n"
+        ".quad 0xedfbbac2, limine_hhdm_request\n"
+        ".quad 0x3e7e9117, limine_modules_request\n"
+        ".quad 0xb632f13b, limine_bootloader_info_request\n"
+        ".quad 0x9ee69ea2, limine_framebuffer_request\n"
+        ".quad 0x1936bd4e, limine_smp_request\n"
+        ".quad 0, 0\n"
+        ".previous");
+""".}
 
-var limineRsdpReq* {.extern: "limine_rsdp_request", section: ".requests":} =
-  LimineRsdpRequest(revision: 0)
+# Nim-side accessors that point at the very same C objects above.
+var gLimineMemmap* {.importc: "nimos_memmap_req", header: "", nodecl.}: LimineMemmapRequest
+var gLimineHhdm* {.importc: "nimos_hhdm_req", header: "", nodecl.}: LimineHhdmRequest
+var gLimineModules* {.importc: "nimos_modules_req", header: "", nodecl.}: LimineModulesRequest
+var gLimineBootinfo* {.importc: "nimos_bootinfo_req", header: "", nodecl.}: LimineBootloaderInfoRequest
+var gLimineFb* {.importc: "nimos_fb_req", header: "", nodecl.}: LimineFramebufferRequest
+var gLimineSmp* {.importc: "nimos_smp_req", header: "", nodecl.}: LimineSmpRequest
 
-var limineBootdevReq* {.extern: "limine_bootdev_request", section: ".requests":} =
-  LimineBootdevRequest(revision: 0)
+proc limineBaseRevisionOk*(): bool = gLimineMemmap.revision == LIMINE_REQ_OK
+
+proc hhdmOffset*(): uint64 =
+  ## The virtual bias Limine chose for the higher-half direct map. Physical
+  ## address P is readable/writable at (P + hhdmOffset()) until we swap in
+  ## our own page tables (which keep the same bias -- see vmm.nim).
+  gLimineHhdm.offset
+
+template physToVirt*(pa: uint64): uint64 = pa + hhdmOffset()
+
+proc memmapCount*(): int = int(gLimineMemmap.entry_count)
+proc memmapEntry*(i: int): LimineMemmapEntry =
+  gLimineMemmap.entries[i]
+
+proc modulesCount*(): int = int(gLimineModules.module_count)
+proc moduleAt*(i: int): LimineModule = gLimineModules.modules[i]
 
 {.pop.}
