@@ -52,8 +52,8 @@ type
     children*: array[32, int]  # child pool indices, -1 terminated-ish
     nChildren*: int
     # char devices: which ops handle read/write
-    devRead*: proc(buf: pointer, n: int): int {.cdecl.}
-    devWrite*: proc(buf: pointer, n: int): int {.cdecl.}
+    devRead*: proc(buf: pointer, n: int): int
+    devWrite*: proc(buf: pointer, n: int): int
 
   OpenFile* = object
     used*: bool
@@ -99,7 +99,6 @@ proc allocNode*(): int =
     if not nodes[i].inUse:
       nodes[i] = Vnode(inUse: true, parent: -1)
       nodes[i].nChildren = 0
-      nodes[i].children = [int(0)]  # placeholder; init below
       for k in 0..<32: nodes[i].children[k] = -1
       return i
     inc i
@@ -115,7 +114,7 @@ proc initVfs*() =
   if rootIno >= 0:
     nodes[rootIno].kind = nkDir
     nodes[rootIno].fsId = fsRam
-    nodes[rootIno].mode = S_IFDIR or 0o755.uint32
+    nodes[rootIno].mode = S_IFDIR or 0x01ED'u32
     nodes[rootIno].name.setName("")
 
 proc lookupChild(dirIno: int, name: string): int =
@@ -152,8 +151,8 @@ proc resolvePath*(path: string): int =
       cur = nxt
   cur
 
-proc createNode(dirIno: int, name: string, kind: NodeKind,
-                fsId: FsId): int =
+proc createNodePublic*(dirIno: int, name: string, kind: NodeKind,
+                        fsId: FsId): int =
   if name.len == 0 or name.len >= NAME_MAX: return -1
   if lookupChild(dirIno, name) >= 0: return -ENOENT - 1  # EEXIST marker
   let d = getNode(dirIno)
@@ -165,7 +164,7 @@ proc createNode(dirIno: int, name: string, kind: NodeKind,
   nodes[ni].fsId = fsId
   nodes[ni].name.setName(name)
   nodes[ni].mode = (if kind == nkDir: S_IFDIR else:
-                    if kind == nkCharDev: S_IFCHR else: S_IFREG) or 0o644.uint32
+                    if kind == nkCharDev: S_IFCHR else: S_IFREG) or 0x01A4'u32
   nodes[ni].parent = dirIno
   d.children[d.nChildren] = ni
   inc d.nChildren
@@ -174,19 +173,19 @@ proc createNode(dirIno: int, name: string, kind: NodeKind,
 proc vfsMkdir*(parentPath, name: string): int =
   let p = resolvePath(parentPath)
   if p < 0: return -ENOENT
-  createNode(p, name, nkDir, fsRam)
+  createNodePublic(p, name, nkDir, fsRam)
 
 proc vfsCreate*(parentPath, name: string): int =
   let p = resolvePath(parentPath)
   if p < 0: return -ENOENT
-  createNode(p, name, nkFile, fsRam)
+  createNodePublic(p, name, nkFile, fsRam)
 
 proc vfsRegisterDev*(dirPath, name: string,
-                     r: proc(buf: pointer, n: int): int {.cdecl.},
-                     w: proc(buf: pointer, n: int): int {.cdecl.}): int =
+                     r: proc(buf: pointer, n: int): int,
+                     w: proc(buf: pointer, n: int): int): int =
   let p = resolvePath(dirPath)
   if p < 0: return -ENOENT
-  let ni = createNode(p, name, nkCharDev, fsDev)
+  let ni = createNodePublic(p, name, nkCharDev, fsDev)
   if ni >= 0:
     nodes[ni].devRead = r
     nodes[ni].devWrite = w

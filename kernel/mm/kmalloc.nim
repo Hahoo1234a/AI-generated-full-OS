@@ -101,13 +101,15 @@ proc kmalloc*(n: uint64): pointer =
   if growHeap(sz): return kmalloc(sz)
   nil
 
+proc kfree*(p: pointer)
+
 proc krealloc*(p: pointer, n: uint64): pointer =
   if p.isNil: return kmalloc(n)
   let old = hdr(p)
   if old.size >= n: return p
   let np = kmalloc(n)
   if np.isNil: return nil
-  copyMem(np, p, min(old.size.int, n.int))
+  copyMem(np, p, if old.size < n: old.size.int else: n.int)
   kfree(p)
   np
 
@@ -118,20 +120,14 @@ proc kfree*(p: pointer) =
   if h.used:
     h.used = false
     dec liveBytes, h.size
-    # coalesce forward
+    # coalesce forward repeatedly: absorb each adjacent free block, whose
+    # header then becomes part of our payload (hence + sizeof(BlockHdr)).
     var cur = h
     while true:
       let nx = nextHdr(cur)
       if cast[uint64](nx) >= arenaEnd: break
       if nx.used: break
       cur.size += nx.size + sizeof(BlockHdr).uint64
-      # continue coalescing chain
-      var nxt2 = nextHdr(nx)
-      if cast[uint64](nxt2) >= arenaEnd: break
-      if nxt2.used: break
-      cur.size += sizeof(BlockHdr).uint64 + nxt2.size
-      cur = nxt2   # simplified double-step merge
-      break
 
 proc kcalloc*(count, elemSize: uint64): pointer =
   let total = count * elemSize
@@ -142,12 +138,13 @@ proc heapStats*(): (uint64, uint64, uint64) =
   (arenaEnd - arenaStart, liveBytes, peakBytes)
 
 # ---- C-ABI shims so Nim's generated C never references libc ----------------
+# With --mm:none/--gc:none the generated C still emits forward declarations
+# for malloc-family helpers; we provide real definitions that route into our
+# own heap. {.emit.} at top level lands verbatim in the generated .c file,
+# and codegenDecl renames every `static` to `extern` so nothing collides.
 {.emit: """
-void* nimLegacyMalloc(size_t s);
-void  nimLegacyFree(void* p);
+void* nimLegacyMalloc(size_t size) { return kmalloc((uint64_t)size); }
+void  nimLegacyFree(void* p)       { kfree(p); }
 """.}
-
-proc nimLegacyMalloc(s: csize): pointer {.importc: "nimLegacyMalloc", nodecl.} = kmalloc(s.uint64)
-proc nimLegacyFree(p: pointer) {.importc: "nimLegacyFree", nodecl.} = kfree(p)
 
 {.pop.}

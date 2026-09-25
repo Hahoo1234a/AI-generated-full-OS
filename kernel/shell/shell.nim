@@ -165,7 +165,7 @@ proc cmdWrite(args: seq[string]) =
   while i < args.len:
     if i > 2: text.add(" ")
     text.add(args[i]); inc i
-  let fd = sysOpen(args[1].cstring, O_WRONLY or O_CREAT or O_TRUNC, 0o644'u32)
+  let fd = sysOpen(args[1].cstring, O_WRONLY or O_CREAT or O_TRUNC, 0x01A4'u32)
   if fd < 0: outl("write: failed (" & $fd & ")"); return
   discard sysWrite(fd.cint, addr text[0], text.len.csize)
   discard sysClose(fd.cint)
@@ -178,7 +178,7 @@ proc cmdRm(args: seq[string]) =
 
 proc cmdMkdir(args: seq[string]) =
   if args.len < 2: outl("usage: mkdir <path>"); return
-  let e = sysMkdir(args[1].cstring, 0o755'u32)
+  let e = sysMkdir(args[1].cstring, 0x01ED'u32)
   if e != 0: outl("mkdir: error " & $e)
 
 proc cmdStat(args: seq[string]) =

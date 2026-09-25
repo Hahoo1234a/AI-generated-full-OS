@@ -18,6 +18,8 @@ import ../types, ../mem, ../mm/kmalloc, vfs
 import tty, ../drivers/vga
 
 const
+  MAX_FILES*     = 64    ## per-"process" fd table size (0..2 reserved stdio)
+
   SYS_READ*      = 0
   SYS_WRITE*     = 1
   SYS_OPEN*      = 2
@@ -33,6 +35,13 @@ proc setRoot*(ino: int) = cwdIno = ino
 
 template isOpenFd(fd: cint): bool =
   fd >= 0 and fd < MAX_FILES and openFiles[fd].used
+
+proc rfindSep(s: string): int =
+  var i = s.len - 1
+  while i >= 0:
+    if s[i] == '/': return i
+    dec i
+  -1
 
 proc sysOpen(path: cstring, flags: uint32, mode: uint32): Errno {.cdecl.} =
   let p = $path
@@ -67,52 +76,45 @@ proc sysOpen(path: cstring, flags: uint32, mode: uint32): Errno {.cdecl.} =
     inc i
   -EMFILE
 
-proc rfindSep(s: string): int =
-  var i = s.len - 1
-  while i >= 0:
-    if s[i] == '/': return i
-    dec i
-  -1
-
 proc sysClose(fd: cint): Errno {.cdecl.} =
   if not isOpenFd(fd): return -EBADF
   openFiles[fd].used = false
   0'i32
 
-proc sysRead(fd: cint, buf: pointer, count: csize): isize {.cdecl.} =
-  if not isOpenFd(fd): return -EBADF.csize.isize
+proc sysRead(fd: cint, buf: pointer, count: csize): Ssize {.cdecl.} =
+  if not isOpenFd(fd): return -(EBADF.Ssize)
   let n = getNode(openFiles[fd].node)
-  if n.isNil: return -EIO.isize
+  if n.isNil: return -EIO.Ssize
   case n.kind
   of nkCharDev:
-    if n.devRead.isNil: return -ENXIO.isize
-    n.devRead(buf, count.int).isize
+    if n.devRead.isNil: return -ENXIO.Ssize
+    n.devRead(buf, count.int).Ssize
   of nkDir:
     # POSIX: read() on a directory -> EISDIR (use getdents instead)
-    -EISDIR.isize
+    -EISDIR.Ssize
   of nkFile:
     if openFiles[fd].off >= n.size: return 0   # EOF
     let avail = (n.size - openFiles[fd].off).int
     let take = min(count.int, avail)
     copyMem(buf, cast[pointer](cast[uint64](n.data) + openFiles[fd].off), take)
     openFiles[fd].off += take.uint64
-    take.isize
+    take.Ssize
 
-proc sysWrite(fd: cint, buf: pointer, count: csize): isize {.cdecl.} =
-  if not isOpenFd(fd): return -EBADF.isize
+proc sysWrite(fd: cint, buf: pointer, count: csize): Ssize {.cdecl.} =
+  if not isOpenFd(fd): return -EBADF.Ssize
   let n = getNode(openFiles[fd].node)
-  if n.isNil: return -EIO.isize
+  if n.isNil: return -EIO.Ssize
   case n.kind
   of nkCharDev:
-    if n.devWrite.isNil: return -ENXIO.isize
-    n.devWrite(buf, count.int).isize
-  of nkDir: -EISDIR.isize
+    if n.devWrite.isNil: return -ENXIO.Ssize
+    n.devWrite(buf, count.int).Ssize
+  of nkDir: -EISDIR.Ssize
   of nkFile:
     let need = openFiles[fd].off + count.uint64
     if need > n.cap:
       let newCap = alignUp(max(need * 2, 4096'u64), PAGE_SIZE)
       let grown = kmalloc(newCap)
-      if grown.isNil: return -ENOMEM.isize
+      if grown.isNil: return -ENOMEM.Ssize
       if not n.data.isNil:
         copyMem(grown, n.data, n.size.int)
         kfree(n.data)
@@ -121,7 +123,7 @@ proc sysWrite(fd: cint, buf: pointer, count: csize): isize {.cdecl.} =
     copyMem(cast[pointer](cast[uint64](n.data) + openFiles[fd].off), buf, count.int)
     openFiles[fd].off += count.uint64
     if openFiles[fd].off > n.size: n.size = openFiles[fd].off
-    count.isize
+    count.Ssize
 
 proc sysLseek(fd: cint, off: int64, whence: cint): int64 {.cdecl.} =
   if not isOpenFd(fd): return (-EBADF).int64
@@ -138,18 +140,18 @@ proc sysLseek(fd: cint, off: int64, whence: cint): int64 {.cdecl.} =
   openFiles[fd].off = res.uint64
   res
 
-proc sysGetdents(fd: cint, dirp: pointer, count: csize): isize {.cdecl.} =
+proc sysGetdents(fd: cint, dirp: pointer, count: csize): Ssize {.cdecl.} =
   ## Simplified linux_dirent64 stream: fixed-size records for predictability.
-  if not isOpenFd(fd): return -EBADF.isize
+  if not isOpenFd(fd): return -EBADF.Ssize
   let n = getNode(openFiles[fd].node)
-  if n.isNil: return -EIO.isize
-  if n.kind != nkDir: return -ENOTDIR.isize
+  if n.isNil: return -EIO.Ssize
+  if n.kind != nkDir: return -ENOTDIR.Ssize
   let recSize = sizeof(DirEnt).csize
-  if count < recSize: return -EINVAL.isize
+  if count < recSize: return -EINVAL.Ssize
   let idx = openFiles[fd].off.int
   if idx >= n.nChildren: return 0     # end of stream
   let child = getNode(n.children[idx])
-  if child.isNil: return -EIO.isize
+  if child.isNil: return -EIO.Ssize
   var de = DirEnt(ino: idx.uint32 + 1,
                   typ: (if child.kind == nkDir: 2'u8 else:
                         if child.kind == nkCharDev: 3'u8 else: 1'u8))
@@ -157,7 +159,7 @@ proc sysGetdents(fd: cint, dirp: pointer, count: csize): isize {.cdecl.} =
   de.nameLen = getName(child.name).len.uint8
   copyMem(dirp, addr de, sizeof(DirEnt).int)
   openFiles[fd].off += 1
-  recSize.isize
+  recSize.Ssize
 
 proc sysUnlink*(path: cstring): Errno {.cdecl.} =
   let p = $path

@@ -34,8 +34,8 @@ const
   PTE_DIRTY*:   uint64 = 1 shl 6
   PTE_HUGE*:    uint64 = 1 shl 7
   PTE_GLOBAL*:  uint64 = 1 shl 8
-  PTE_NX*:      uint64 = 1 shl 63
-  ADDR_MASK*:   uint64 = 0x0000_FFFF_FFFF_FFFF'u64
+  PTE_NX*:      uint64 = (1'u64 shl 63)
+  ADDR_MASK*:   uint64 = 0x0000FFFFFFFFFFFF'u64   # low 48 bits (parenthesized so `not` binds correctly)
   PAGE_FLAGS_RW_NX* = PTE_PRESENT or PTE_WRITE or PTE_NX
   PAGE_FLAGS_RO*    = PTE_PRESENT
   PAGE_FLAGS_EXEC*  = PTE_PRESENT or PTE_WRITE   # writable+exec for simplicity
@@ -61,12 +61,13 @@ var pml4Virt*: VirtAddr       # same, through HHDM
 var hhdm*: uint64             # cached HHDM offset (must match limine's!)
 var nxSupported* = false
 
-template idx(va, level: int): uint64 =
-  ## Extract the 9-bit table index for `level` (0=PTE .. 3=PML4T? careful:
-  ## level 3 = PML4 index, 2 = PDPT, 1 = PD, 0 = PT).
-  (va shr (12 + 9 * level)) and 511
-
-proc nextLevelTable(cur: ptr UncheckedArray[PageTableEntry], slot: uint64):
+template idx(va: untyped, level: int): int =
+  # Nim array/UncheckedArray indexing demands `int`; extract the 9-bit
+  # table index for `level` (3 = PML4, 2 = PDPT, 1 = PD, 0 = PT) and
+  # widen it to int in one place. `va: untyped` so VirtAddr (= uint64
+  # alias) arguments bind without ordinal-type complaints.
+  int((va shr (12 + 9 * level)) and 511)
+proc nextLevelTable(cur: ptr UncheckedArray[PageTableEntry], slot: int):
     ptr UncheckedArray[PageTableEntry] =
   ## Return child table for `slot`, allocating a zeroed frame if absent.
   if (cur[slot] and PTE_PRESENT) != 0:

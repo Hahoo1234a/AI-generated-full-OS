@@ -68,12 +68,12 @@ proc initPmm*() =
   while i < n:
     let e = memmapEntry(i)
     if e.kind == MM_FREE_MEMORY or e.kind == MM_BOOTLOADER_RECLAIMABLE:
-      let end_ = e.base + e.length
-      if end_ > topPa: topPa = end_
+      let rend = e.base + e.length
+      if rend > topPa: topPa = rend
     inc i
   maxFrame = topPa div PAGE_SIZE
   let wordsNeeded = int((maxFrame div 64) + 1)
-  let bytesNeeded = alignUp(wordsNeeded * 8'u64, PAGE_SIZE)
+  let bytesNeeded = alignUp(wordsNeeded.uint64 * 8'u64, PAGE_SIZE)
   bitmapFrames = bytesNeeded div PAGE_SIZE
 
   # --- carve the bitmap out of the biggest free region ----------------------

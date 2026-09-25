@@ -50,30 +50,6 @@ proc addFileToDir(dirIno: int, name: string, src: ptr UncheckedArray[uint8],
   n.size = size
   0'i32
 
-# re-exported createNode lives in vfs but isn't public yet; shim:
-proc createNodePublic*(dirIno: int, name: string, kind: NodeKind,
-                       fsId: FsId): int =
-  # duplicate of internal logic kept minimal: use vfsCreate for parent path
-  # style APIs instead by splitting nothing -- dirIno based:
-  var i = 0
-  let d = getNode(dirIno)
-  if d.isNil or d.kind != nkDir: return -1
-  while i < d.nChildren:
-    let c = getNode(d.children[i])
-    if not c.isNil and c.name.nameEq(name): return -1
-    inc i
-  if d.nChildren >= 32: return -1
-  let ni = allocNode()
-  if ni < 0: return -1
-  nodes[ni].kind = kind
-  nodes[ni].fsId = fsId
-  nodes[ni].name.setName(name)
-  nodes[ni].mode = (if kind == nkDir: S_IFDIR else: S_IFREG) or 0o644.uint32
-  nodes[ni].parent = dirIno
-  d.children[d.nChildren] = ni
-  inc d.nChildren
-  ni
-
 proc mountNimFs(imgBase: uint64, imgSize: uint64): Errno =
   let hdr = cast[ptr NimFsHeader](imgBase)
   if hdr.magic != NIMFS_MAGIC or hdr.version != NIMFS_VERSION:

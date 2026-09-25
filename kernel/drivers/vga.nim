@@ -29,15 +29,31 @@ type
     bg*: uint8
 
 const
-  FG_BLACK*     = 0'u8; FG_BLUE*     = 1'u8; FG_GREEN*   = 2'u8
-  FG_CYAN*      = 3'u8; FG_RED*      = 4'u8; FG_MAGENTA* = 5'u8
-  FG_BROWN*     = 6'u8; FG_LGRAY*    = 7'u8; FG_DGRAY*   = 8'u8
-  FG_LBLUE*     = 9'u8; FG_LGREEN*  = 10'u8; FG_LCYAN*  = 11'u8
-  FG_LRED*      = 12'u8; FG_LMAG*    = 13'u8; FG_YELLOW* = 14'u8
+  FG_BLACK*     = 0'u8
+  FG_BLUE*     = 1'u8
+  FG_GREEN*   = 2'u8
+  FG_CYAN*      = 3'u8
+  FG_RED*      = 4'u8
+  FG_MAGENTA* = 5'u8
+  FG_BROWN*     = 6'u8
+  FG_LGRAY*    = 7'u8
+  FG_DGRAY*   = 8'u8
+  FG_LBLUE*     = 9'u8
+  FG_LGREEN*  = 10'u8
+  FG_LCYAN*  = 11'u8
+  FG_LRED*      = 12'u8
+  FG_LMAG*    = 13'u8
+  FG_YELLOW* = 14'u8
   FG_WHITE*     = 15'u8
-  BG_BLACK*     = 0'u8; BG_BLUE*     = 1'u8; BG_GREEN*   = 2'u8
-  BG_CYAN*      = 3'u8; BG_RED*      = 4'u8; BG_MAGENTA* = 5'u8
-  BG_BROWN*     = 6'u8; BG_GRAY*     = 7'u8; BG_LGRAY*   = 8'u8
+  BG_BLACK*     = 0'u8
+  BG_BLUE*     = 1'u8
+  BG_GREEN*   = 2'u8
+  BG_CYAN*      = 3'u8
+  BG_RED*      = 4'u8
+  BG_MAGENTA* = 5'u8
+  BG_BROWN*     = 6'u8
+  BG_GRAY*     = 7'u8
+  BG_LGRAY*   = 8'u8
 
 var vgaBuf: ptr UncheckedArray[uint16]
 var row, col: int
@@ -64,7 +80,8 @@ proc clearScreen*() =
   while i < ROWS * COLS:
     vgaBuf[i] = (curAttr.uint16 shl 8) or 0x20'u16
     inc i
-  row = 0; col = 0
+  row = 0
+  col = 0
   setCursor(0, 0)
 
 proc scrollUp*() =

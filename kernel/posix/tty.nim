@@ -56,10 +56,10 @@ proc pollInput() =
   of CTRL_H:
     if lineLen > 0:
       dec lineLen
-      putcharEcho("\b \b")
+      for cc in "\b \b": putcharEcho(cc)
   of CTRL_U:
     while lineLen > 0:
-      putcharEcho("\b \b")
+      for cc in "\b \b": putcharEcho(cc)
       dec lineLen
   of CTRL_D:
     # EOF semantics: only meaningful on an empty pending line
@@ -71,6 +71,10 @@ proc pollInput() =
       lineBuf[lineLen] = ch
       inc lineLen
       putcharEcho(ch)
+
+template pauseSpin() =
+  var s = 0
+  while s < 2000: inc s   # ~microsecond-ish backoff; replaced by hlt later
 
 proc ttyRead*(buf: pointer, count: int): int =
   ## POSIX read(2) on fd 0: returns >=1 bytes when a line is pending; blocks
@@ -99,12 +103,12 @@ proc ttyWrite*(buf: pointer, count: int): int =
     inc i
   count
 
-proc devNullRead*(buf: pointer, n: int): int {.cdecl.} = 0
-proc devNullWrite*(buf: pointer, n: int): int {.cdecl.} = n
-proc zeroRead*(buf: pointer, n: int): int {.cdecl.} =
+proc devNullRead*(buf: pointer, n: int): int = 0
+proc devNullWrite*(buf: pointer, n: int): int = n
+proc zeroRead*(buf: pointer, n: int): int =
   zeroMem(buf, n); n
-proc consoleRead*(buf: pointer, n: int): int {.cdecl.} = ttyRead(buf, n)
-proc consoleWrite*(buf: pointer, n: int): int {.cdecl.} = ttyWrite(buf, n)
+proc consoleRead*(buf: pointer, n: int): int = ttyRead(buf, n)
+proc consoleWrite*(buf: pointer, n: int): int = ttyWrite(buf, n)
 
 proc initTty*() =
   initSerial()
@@ -114,20 +118,9 @@ proc initTty*() =
 proc registerDevfs*() =
   ## Creates /dev/{tty,null,zero} once root exists. Call after initVfs().
   discard vfsMkdir("/", "dev")
-  let devIno = resolvePath("/dev")
-  if devIno >= 0:
-    discard vfsRegisterDevPublic(devIno, "tty", consoleRead, consoleWrite)
-    discard vfsRegisterDevPublic(devIno, "null", devNullRead, devNullWrite)
-    discard vfsRegisterDevPublic(devIno, "zero", zeroRead, devNullWrite)
+  discard vfsRegisterDev("/dev", "tty", consoleRead, consoleWrite)
+  discard vfsRegisterDev("/dev", "null", devNullRead, devNullWrite)
+  discard vfsRegisterDev("/dev", "zero", zeroRead, devNullWrite)
 
-# small public shim around vfs's private creator (kept here to avoid churn):
-proc vfsRegisterDevPublic*(dirIno: int, name: string,
-                           r: proc(buf: pointer, n: int): int {.cdecl.},
-                           w: proc(buf: pointer, n: int): int {.cdecl.}): int =
-  createNodeForDir(dirIno, name, nkCharDev, fsDev, r, w)
-
-template pauseSpin() =
-  var s = 0
-  while s < 2000: inc s   # ~microsecond-ish backoff; replaced by hlt later
 
 {.pop.}

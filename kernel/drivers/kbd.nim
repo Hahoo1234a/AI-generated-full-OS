@@ -41,9 +41,11 @@ var lShift, rShift, capsLk = false
 var sawE0 = false
 var kbdReady = false
 
-proc scToAscii(sc: uint8): int =
-  ## Returns -1 when the code has no printable meaning.
+proc scToAscii(sc: uint8): char =
+  ## Returns '\0' when the code has no printable meaning (callers test < 0
+  ## style via `.int >= 0`? No -- they test `a >= '\0'`... see pollKbd).
   let shifted = lShift or rShift or capsLk
+  result = '\0'
   case sc
   of 0x02: result = if shifted: '!' else: '1'
   of 0x03: result = if shifted: '@' else: '2'
@@ -59,27 +61,27 @@ proc scToAscii(sc: uint8): int =
   of 0x0D: result = if shifted: '+' else: '='
   of 0x0E: result = '\b'          # Backspace
   of 0x0F: result = '\t'          # Tab
+  of 0x10..0x19:                  # Q W E R T Y U I O P
+    const qwerty = "qwertyuiop"
+    result = qwerty[sc.int - 0x10]
+  of 0x1A: result = '['           # [  (scan 0x1A wins over the letter row)
+  of 0x1B: result = ']'           # ]
   of 0x1E..0x25, 0x27, 0x28:      # A S D F G H J K
-    result = cast[char](uint8('a') + (sc - 0x1E))
-  of 0x26: result = 'l'           # L sits between K and ; in the table order
+    result = chr(ord('a') + (sc.int - 0x1E))
+  of 0x26: result = 'l'           # L sits between K and ; in scan order
+  of 0x2A: result = chr(92)      # backslash '\\' (next to Enter on ISO) (next to Enter on ISO layout)
   of 0x2C..0x31:                  # Z X C V B N
-    result = cast[char](uint8('z') + (sc - 0x2C))
-  of 0x32: result = 'm'
+    result = chr(ord('z') + (sc.int - 0x2C))
+  of 0x32: result = 'm'           # M
   of 0x33: result = if shifted: '<' else: ','
   of 0x34: result = if shifted: '>' else: '.'
   of 0x35: result = if shifted: '?' else: '/'
-  of 0x10..0x1D:                  # Q W E R T Y U I O P
-    const qwerty = "qwertyuiop"
-    result = qwerty[sc - 0x10]
-  of 0x1A: result = '['
-  of 0x1B: result = ']'
-  of 0x2B: result = ';'
-  of 0x2C: result = '\''
-  of 0x39: result = ' '            # Spacebar
-  of 0x1C: result = '\n'           # Enter
-  else: result = -1
-  if result.int >= 'a'.int and result.int <= 'z'.int and shifted:
-    result = cast[int](cast[char](result.uint8 - 32'i8))
+  of 0x39: result = ' '           # Spacebar
+  of 0x1C: result = '\n'          # Enter
+  of 0x2B: result = if shifted: ':' else: ';'
+  else: discard
+  if shifted and result >= 'a' and result <= 'z':
+    result = chr(result.ord - 32)
 
 proc pushKey(code: uint8) =
   let nwr = (wr + 1) mod BUF_SIZE
@@ -106,9 +108,8 @@ proc pollKbd*() =
     of 0x3A: capsLk = not capsLk  # CapsLock make toggles; release 0xBA ignored
     else:
       if (code and 0x80) == 0:   # make code only
-        if code == 0x39 shl 0: discard  # placeholder keep-case
         let a = scToAscii(code)
-        if a >= 0:
+        if a != '\0':
           pushKey(a.uint8)
         elif code == 0x01:       # ESC: push as \x1b so shell can see it
           pushKey(0x1B)
