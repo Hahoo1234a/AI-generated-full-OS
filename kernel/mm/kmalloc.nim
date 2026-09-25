@@ -142,9 +142,30 @@ proc heapStats*(): (uint64, uint64, uint64) =
 # for malloc-family helpers; we provide real definitions that route into our
 # own heap. {.emit.} at top level lands verbatim in the generated .c file,
 # and codegenDecl renames every `static` to `extern` so nothing collides.
-{.emit: """
-void* nimLegacyMalloc(size_t size) { return kmalloc((uint64_t)size); }
-void  nimLegacyFree(void* p)       { kfree(p); }
-""".}
+# The ORC/dtor string + seq machinery calls these RTL hooks directly:
+proc alloc0*(size: int): pointer {.noconv.} =
+  result = kmalloc(size.uint64)
+  if not result.isNil: zeroMem(result, size)
+
+proc dealloc*(p: pointer) {.noconv.} =
+  kfree(p)
+
+proc reallocShared0(p: pointer, oldSize, newSize: int): pointer {.noconv.} =
+  if p.isNil: return alloc0(newSize)
+  if newSize == 0:
+    dealloc(p)
+    return nil
+  result = alloc0(newSize)
+  if not result.isNil:
+    copyMem(result, p, if oldSize < newSize: oldSize else: newSize)
+    dealloc(p)
+
+proc reallocShared(p: pointer, newSize: int): pointer {.noconv.} =
+  reallocShared0(p, 0, newSize)
+
+proc nimLegacyAlloc(size: int): pointer {.exportc: "nimLegacyAlloc", used.} = kmalloc(size.uint64)
+proc nimLegacyRealloc(p: pointer, size: int): pointer {.exportc: "nimLegacyRealloc", used.} = krealloc(p, size.uint64)
+proc nimLegacyFree00(p: pointer, size: int) {.exportc: "nimLegacyFree00", used.} = discard
+proc nimLegacyFree(p: pointer) {.exportc: "nimLegacyFree", used.} = kfree(p)
 
 {.pop.}

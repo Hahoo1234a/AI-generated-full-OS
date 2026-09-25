@@ -15,6 +15,7 @@
 {.push hints: off, raises: [].}
 
 import types, limine, mem
+import arch/x86_64/io as pio
 import mm/pmm, mm/vmm, mm/kmalloc
 import drivers/[serial, vga]
 import posix/[vfs, ramfs, tty]
@@ -44,7 +45,7 @@ proc panicAt(msg: string) =
   setColors(FG_WHITE, BG_RED)
   kputs("KERNEL PANIC: " & msg & "\n")
   setColors(FG_LGRAY, BG_BLACK)
-  while true: hlt()
+  while true: pio.hlt()
 
 # ---------------------------------------------------------------------------
 # The hand-written entry stub. It:

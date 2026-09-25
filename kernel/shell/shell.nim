@@ -13,7 +13,8 @@
 
 {.push hints: off, raises: [].}
 
-import ../types, ../mem, ../limine, ../mm/pmm, ../mm/kmalloc,
+import ../types, ../mem, ../limine,
+       ../arch/x86_64/io as pio, ../mm/pmm, ../mm/kmalloc,
        ../posix/vfs, ../posix/syscall, ../posix/tty,
        ../drivers/vga, ../drivers/serial, ../drivers/kbd
 
@@ -220,6 +221,9 @@ proc cmdColor(args: seq[string]) =
   else:
     outl("color: bad values")
 
+proc haltCpu() =
+  while true: pio.hlt()
+
 proc cmdUname() = outl("Nimos 0.1.0 x86_64 Limine/Nim standalone")
 proc cmdAbout() =
   outl("Nimos -- an OS written entirely in Nim.")
@@ -229,16 +233,13 @@ proc cmdReboot() =
   outl("rebooting (triple fault)...")
   # keyboard controller reset pulse
   var tries = 100000
-  while (inb(0x64'u16) and 0x02) != 0 and tries > 0: dec tries
-  outb(0x64'u16, 0xFE'u8)
+  while (pio.inb(0x64'u16) and 0x02) != 0 and tries > 0: dec tries
+  pio.outb(0x64'u16, 0xFE'u8)
   haltCpu()
 
 proc cmdHalt() =
   outl("halting.")
   haltCpu()
-
-proc haltCpu() =
-  while true: hlt()
 
 proc runShell*(banner: bool = true) =
   if banner:
